@@ -32,6 +32,7 @@ using WindowsGSM.Properties;
 using static System.Net.Mime.MediaTypeNames;
 using System.Globalization;
 using ControlzEx.Standard;
+using System.Threading;
 
 namespace WindowsGSM
 {
@@ -1641,6 +1642,7 @@ namespace WindowsGSM
 
             //ShowWindow(hWnd, ShowWindow(hWnd, WindowShowStyle.Hide) ? WindowShowStyle.Hide : WindowShowStyle.ShowNormal);
             ShowWindow(hWnd, WindowShowStyle.Hide);
+            Thread.Sleep(500);
             ShowWindow(p.MainWindowHandle, _serverMetadata[int.Parse(server.ID)].ShowConsole ? WindowShowStyle.ShowNormal : WindowShowStyle.Hide);
         }
 
@@ -1896,6 +1898,7 @@ namespace WindowsGSM
                     {
                         while (!p.HasExited && !ShowWindow(p.MainWindowHandle, WindowShowStyle.Minimize))
                         {
+                            Thread.Sleep(500);
                             //Debug.WriteLine("Try Setting ShowMinNoActivate Console Window");
                         }
 
@@ -1907,6 +1910,8 @@ namespace WindowsGSM
 
                     p.WaitForInputIdle();
 
+                    ShowWindow(p.MainWindowHandle, WindowShowStyle.Hide);
+                    Thread.Sleep(500);
                     ShowWindow(p.MainWindowHandle, _serverMetadata[int.Parse(server.ID)].ShowConsole? WindowShowStyle.ShowNormal : WindowShowStyle.Hide);
 
                 }
@@ -3120,6 +3125,7 @@ namespace WindowsGSM
                         string type = JObject.Parse(json)["type"].ToString();
 
                         g_DonorType = type;
+
                         g_DiscordBot.SetDonorType(g_DonorType);
                         comboBox_Themes.IsEnabled = true;
 
@@ -3759,6 +3765,7 @@ namespace WindowsGSM
             {
                 button_DiscordBotPrefixEdit.Content = "Save";
                 textBox_DiscordBotPrefix.IsEnabled = true;
+                textBox_DiscordBotName.IsEnabled = true;
                 textBox_DiscordBotPrefix.Focus();
                 textBox_DiscordBotPrefix.SelectAll();
             }
@@ -3766,7 +3773,11 @@ namespace WindowsGSM
             {
                 button_DiscordBotPrefixEdit.Content = "Edit";
                 textBox_DiscordBotPrefix.IsEnabled = false;
+                textBox_DiscordBotName.IsEnabled = false;
+
                 DiscordBot.Configs.SetBotPrefix(textBox_DiscordBotPrefix.Text);
+                DiscordBot.Configs.SetBotName(textBox_DiscordBotName.Text);
+
                 label_DiscordBotCommands.Content = DiscordBot.Configs.GetCommandsList();
             }
         }
@@ -4048,6 +4059,7 @@ namespace WindowsGSM
                 button_DiscordBotPrefixEdit.Content = "Edit";
                 textBox_DiscordBotPrefix.IsEnabled = false;
                 textBox_DiscordBotPrefix.Text = DiscordBot.Configs.GetBotPrefix();
+                textBox_DiscordBotName.Text = DiscordBot.Configs.GetBotName();
 
                 button_DiscordBotTokenEdit.Content = "Edit";
                 textBox_DiscordBotToken.IsEnabled = false;
