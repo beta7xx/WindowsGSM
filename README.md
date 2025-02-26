@@ -125,7 +125,6 @@ For the Programm in general have a look over at its patreon:
 [WGSM_Patreon](https://www.patreon.com/join/WindowsGSM)
 
 
-
 ### License
 This project is licensed under the MIT License - see the [LICENSE.md](https://github.com/afocommunity/WindowsGSM-Remote/blob/master/LICENSE) file for details
 
