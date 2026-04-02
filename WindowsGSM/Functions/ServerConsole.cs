@@ -2,6 +2,7 @@
 using System.Diagnostics;
 using System.Runtime.InteropServices;
 using System.Windows.Forms;
+using System.Windows;
 using System.Threading.Tasks;
 using System.Collections.Generic;
 using System.Linq;
@@ -29,6 +30,8 @@ namespace WindowsGSM.Functions
         private readonly List<string> _recorderConsoleList = new List<string>();
         private readonly string _serverId;
         private int _lineNumber = 0;
+
+        public string JoinCodeLine = "";
 
         public ServerConsole(string serverId)
         {
@@ -150,12 +153,44 @@ namespace WindowsGSM.Functions
                 }
             }
 
+            //check for known join codes
+            if (string.IsNullOrWhiteSpace(text))
+            {
+                return;
+            }
+
+            if (text.Contains("join code", StringComparison.InvariantCultureIgnoreCase) || text.Contains("joincode",StringComparison.InvariantCultureIgnoreCase))
+            {
+                JoinCodeLine = text;
+                SendWebhookAsync(text);
+            }
+
             _consoleList.Add(text);
             if (_consoleList.Count > MAX_LINE)
             {
                 _consoleList.RemoveAt(0);
             }
         }
+
+        public async Task SendWebhookAsync(string text)
+        {
+            await System.Windows.Application.Current.Dispatcher.Invoke(async () =>
+            {
+                MainWindow WindowsGSM = (MainWindow)System.Windows.Application.Current.MainWindow;
+                if (WindowsGSM.IsServerExist(_serverId))
+                {
+                    MainWindow.ServerStatus serverStatus = WindowsGSM.GetServerStatus(_serverId);
+                    var server = WindowsGSM.GetServerTableById(_serverId);
+                    if (WindowsGSM.GetServerMetadata(_serverId).DiscordAlert && StartAlertsEnabled(WindowsGSM))
+                    {
+                        var webhook = new DiscordWebhook(WindowsGSM.GetServerMetadata(_serverId).DiscordWebhook, WindowsGSM.GetServerMetadata(_serverId).DiscordMessage, WindowsGSM.g_DonorType, WindowsGSM.GetServerMetadata(_serverId).SkipUserSetup);
+                        await webhook.SendPlain($"Server {_serverId}, {server.Name}:  Join Code Found: {text}");
+                    }
+                }
+            });
+        }
+
+ 
 
         public static void SendMessageToMainWindow(IntPtr hWnd, string message)
         {
@@ -213,6 +248,11 @@ namespace WindowsGSM.Functions
             var text = string.Join(Environment.NewLine, _recorderConsoleList.ToArray());
             _recorderConsoleList.Clear();
             return text;
+        }
+
+        private bool StartAlertsEnabled(MainWindow WindowsGSM)
+        {
+            return (WindowsGSM.GetServerMetadata(_serverId).AutoStartAlert || WindowsGSM.GetServerMetadata(_serverId).AutoRestartAlert || WindowsGSM.GetServerMetadata(_serverId).RestartCrontabAlert);
         }
     }
 }

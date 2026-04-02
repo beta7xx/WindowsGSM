@@ -6,21 +6,24 @@ using System.Web;
 using Newtonsoft.Json.Linq;
 using System.IO;
 using System.Linq;
+using System.Globalization;
 
 namespace WindowsGSM.Functions
 {
-    class DiscordWebhook 
+    class DiscordWebhook
     {
         private static readonly HttpClient _httpClient = new HttpClient();
         private readonly string _webhookUrl;
         private readonly string _customMessage;
         private readonly string _donorType;
+        private readonly bool _skipUserSetting;
 
-        public DiscordWebhook(string webhookurl, string customMessage, string donorType = "")
+        public DiscordWebhook(string webhookurl, string customMessage, string donorType = "", bool skippAccountOverride = false)
         {
             _webhookUrl = webhookurl ?? string.Empty;
             _customMessage = customMessage ?? string.Empty;
             _donorType = donorType ?? string.Empty;
+            _skipUserSetting = skippAccountOverride;
         }
 
         public async Task<bool> Send(string serverid, string servergame, string serverstatus, string servername, string serverip, string serverport)
@@ -30,11 +33,15 @@ namespace WindowsGSM.Functions
                 return false;
             }
 
-            string avatarUrl = GetAvatarUrl();
+            string userData = "";
+            var avatarUrl = GetAvatarUrl();
+            if (!_skipUserSetting)
+                userData = "    \"username\": \"WindowsGsm\",\r\n" +
+                $"              \"avatar_url\": \"" + avatarUrl + "\",\r\n";
+
             string json = @"
             {
-                ""username"": ""WindowsGSM"",
-                ""avatar_url"": """ + avatarUrl  + @""",
+                " + userData + @"
                 ""content"": """ + HttpUtility.JavaScriptStringEncode(_customMessage) + @""",
                 ""embeds"": [
                 {
@@ -53,7 +60,7 @@ namespace WindowsGSM.Functions
                     },
                     {
                         ""name"": ""Server IP:Port"",
-                        ""value"": """ + serverip + ":"+ serverport + @""",
+                        ""value"": """ + serverip + ":" + serverport + @""",
                         ""inline"": true
                     }],
                     ""author"": {
@@ -64,20 +71,65 @@ namespace WindowsGSM.Functions
                         ""text"": """ + MainWindow.WGSM_VERSION + @" - Discord Alert"",
                         ""icon_url"": """ + avatarUrl + @"""
                     },
-                    ""timestamp"": """ + DateTime.UtcNow.ToString("yyyy-MM-dd'T'HH:mm:ss.mssZ") + @""",
+                    ""timestamp"": """ + DateTime.UtcNow.ToString("yyyy-MM-dd'T'HH:mm:ss.mssZ", CultureInfo.InvariantCulture) + @""",
                     ""thumbnail"": {
                         ""url"": """ + GetThumbnail(serverstatus) + @"""
                     }
                 }]
             }";
+            string logsDir = ServerPath.GetLogs();
+            File.WriteAllText(Path.Combine(logsDir, "debugWebhook_Content.log"), json);
 
             var content = new StringContent(json, Encoding.UTF8, "application/json");
+            File.WriteAllText(Path.Combine(logsDir, "debugWebhook_ContentAfterConversion.log"), content.ReadAsStringAsync().Result);
 
             try
             {
                 var response = await _httpClient.PostAsync(_webhookUrl, content);
                 if (response.Content != null)
                 {
+                    File.WriteAllText(Path.Combine(logsDir, "debugWebhook.log"), response.Content.ReadAsStringAsync().Result);
+                    return true;
+                }
+            }
+            catch
+            {
+                System.Diagnostics.Debug.WriteLine($"Fail to send webhook ({_webhookUrl})");
+            }
+
+            return false;
+        }
+
+        public async Task<bool> SendPlain(string customMessage)
+        {
+            if (string.IsNullOrWhiteSpace(_webhookUrl))
+            {
+                return false;
+            }
+
+            string userData = "";
+            var avatarUrl = GetAvatarUrl();
+            if (!_skipUserSetting)
+                userData = "    \"username\": \"WindowsGsm\",\r\n" +
+                $"              \"avatar_url\": \"" + avatarUrl + "\",\r\n";
+
+            string json = @"
+            {
+                " + userData + @"
+                ""content"": """ + HttpUtility.JavaScriptStringEncode(customMessage) + @"""
+            }";
+
+            File.WriteAllText("debugWebhook_Content.log", json);
+
+            var content = new StringContent(json, Encoding.UTF8, "application/json");
+            File.WriteAllText("debugWebhook_ContentAfterConversion.log", content.ReadAsStringAsync().Result);
+
+            try
+            {
+                var response = await _httpClient.PostAsync(_webhookUrl, content);
+                if (response.Content != null)
+                {
+                    File.WriteAllText("debugWebhook.log", response.Content.ReadAsStringAsync().Result);
                     return true;
                 }
             }
@@ -218,7 +270,7 @@ namespace WindowsGSM.Functions
             catch { }
         }
 
-        protected static string c(string t) => Convert.ToBase64String(Encoding.UTF8.GetBytes(t).Select(b => (byte) (b ^ 0x53)).ToArray());
-        protected static string d(string t) => Encoding.UTF8.GetString(Convert.FromBase64String(t).Select(b => (byte) (b ^ 0x53)).ToArray());
+        protected static string c(string t) => Convert.ToBase64String(Encoding.UTF8.GetBytes(t).Select(b => (byte)(b ^ 0x53)).ToArray());
+        protected static string d(string t) => Encoding.UTF8.GetString(Convert.FromBase64String(t).Select(b => (byte)(b ^ 0x53)).ToArray());
     }
 }

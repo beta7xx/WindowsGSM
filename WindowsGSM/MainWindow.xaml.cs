@@ -34,7 +34,6 @@ using WindowsGSM.GameServer.Query;
 using Label = System.Windows.Controls.Label;
 using MessageBox = System.Windows.MessageBox;
 using Orientation = System.Windows.Controls.Orientation;
-using WindowsGSM.GameServer.Query;
 
 namespace WindowsGSM
 {
@@ -89,6 +88,7 @@ namespace WindowsGSM
             public bool RestartCrontabAlert;
             public bool CrashAlert;
             public bool AutoIpUpdateAlert;
+            public bool SkipUserSetup;
 
             // Restart Crontab Settings
             public bool RestartCrontab;
@@ -133,8 +133,8 @@ namespace WindowsGSM
             Crashed = 13
         }
 
-        public static readonly string WGSM_VERSION = "v" + string.Concat(System.Reflection.Assembly.GetExecutingAssembly().GetName().Version.ToString().Reverse().Skip(2).Reverse());
-        public static readonly int MAX_SERVER = 50;
+        public static readonly string WGSM_VERSION = "v" + string.Concat(System.Reflection.Assembly.GetExecutingAssembly().GetName().Version.ToString());
+        public static readonly int MAX_SERVER = 256;
         public static readonly string WGSM_PATH = Path.GetDirectoryName(Process.GetCurrentProcess().MainModule.FileName);
         public static readonly string DEFAULT_THEME = "Cyan";
 
@@ -163,61 +163,56 @@ namespace WindowsGSM
             source.AddHook(new HwndSourceHook(HandleMessages));
         }
 
-
         protected override async void OnClosing(CancelEventArgs e)
         {
-            // Don't overwrite cancellation for close
-            if (e.Cancel == false)
+            if (e.Cancel)
             {
-                // #2409: don't close window if there is a dialog still open
-                var dialog = await this.GetCurrentDialogAsync<BaseMetroDialog>();
-                e.Cancel = dialog != null && (this.ShowDialogsOverTitleBar || !dialog.DialogSettings.OwnerCanCloseWithDialog);
-
-                //add a close confirmation
-                const string message = "Are you sure that you would like to Exit and stop all servers?";
-                const string caption = "Exit WindowsGSM";
-                var result = MessageBox.Show(message, caption,
-                                             MessageBoxButton.YesNo, MessageBoxImage.Question);
-
-                if (result == MessageBoxResult.No)
-                    e.Cancel = true;
+                return;
             }
 
-            if (e.Cancel == false)
-                StoppAllServers();
+            var dialog = await this.GetCurrentDialogAsync<BaseMetroDialog>();
+            if (dialog != null && (ShowDialogsOverTitleBar || !dialog.DialogSettings.OwnerCanCloseWithDialog))
+            {
+                e.Cancel = true;
+                return;
+            }
 
-            base.OnClosing(e);
+            var runningServers = ServerGrid.Items.Cast<ServerTable>()
+                                .Count(server => GetServerMetadata(server.ID).ServerStatus == ServerStatus.Started);
+
+            if (runningServers > 0)
+            {
+                string message = $"{runningServers} server(s) are currently running and will be stopped.\nAre you sure you want to continue?";
+                const string caption = "Servers Running";
+                var result = MessageBox.Show(this, message, caption, MessageBoxButton.OKCancel, MessageBoxImage.Warning);
+
+                if (result == MessageBoxResult.Cancel)
+                {
+                    e.Cancel = true;
+                    return;
+                }
+            }
+
+            e.Cancel = true;
+            // Hide();
+            await StoppAllServers();
+            System.Windows.Application.Current.Shutdown();
         }
 
-        public void StoppAllServers ()
+        public async Task StoppAllServers()
         {
+            var stopTasks = new List<Task>();
             foreach (var server in ServerGrid.Items.Cast<ServerTable>().ToList())
             {
                 if (GetServerMetadata(server.ID).ServerStatus == ServerStatus.Started)
                 {
-                    GameServer_Stop(server);
+                    stopTasks.Add(GameServer_Stop(server));
                 }
             }
-            int secCounter = 0;
-            int processesRunning = 0;
-            //wait for all servers to stop
-            while (secCounter < 30)
+
+            if (stopTasks.Any())
             {
-                Thread.Sleep(1000);// just wait a fixed 30 sec
-                processesRunning = 0;
-                secCounter++;
-                foreach (var server in ServerGrid.Items.Cast<ServerTable>().ToList())
-                {
-                    Process p = null;
-                    try
-                    {
-                        p = Process.GetProcessById(int.Parse(server.PID)); // will fail wenn the process is completly closed by now
-                        if (p != null && !p.HasExited)
-                            processesRunning++;
-                    }
-                    catch (Exception){ }
-                }
-                if (processesRunning == 0) break;
+                await Task.WhenAll(stopTasks);
             }
         }
 
@@ -670,7 +665,15 @@ namespace WindowsGSM
 
         private void Hyperlink_RequestNavigate(object sender, System.Windows.Navigation.RequestNavigateEventArgs e)
         {
-            Process.Start(e.Uri.AbsoluteUri);
+            try
+            {
+                Process.Start(new ProcessStartInfo(e.Uri.AbsoluteUri) { UseShellExecute = true });
+                e.Handled = true;
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show($"Failed to open link: {ex.Message}", "Error", MessageBoxButton.OK, MessageBoxImage.Error);
+            }
         }
 
         private async void ImportPlugin_Click(object sender, RoutedEventArgs e)
@@ -754,9 +757,11 @@ namespace WindowsGSM
         public void LoadServerTable()
         {
             string[] livePlayerData = new string[MAX_SERVER + 1];
+            string[] liveUptimeData = new string[MAX_SERVER + 1];
             foreach (ServerTable item in ServerGrid.Items)
             {
                 livePlayerData[int.Parse(item.ID)] = item.Maxplayers;
+                liveUptimeData[int.Parse(item.ID)] = item.Uptime;
             }
 
             var selectedrow = (ServerTable)ServerGrid.SelectedItem;
@@ -841,7 +846,8 @@ namespace WindowsGSM
                         Port = serverConfig.ServerPort,
                         QueryPort = serverConfig.ServerQueryPort,
                         Defaultmap = serverConfig.ServerMap,
-                        Maxplayers = (GetServerMetadata(i).ServerStatus != ServerStatus.Started) ? serverConfig.ServerMaxPlayer : livePlayerData[i]
+                        Maxplayers = (GetServerMetadata(i).ServerStatus != ServerStatus.Started) ? serverConfig.ServerMaxPlayer : livePlayerData[i],
+                        Uptime = liveUptimeData[i]
                     };
 
                     SaveServerConfigToServerMetadata(i, serverConfig);
@@ -884,6 +890,7 @@ namespace WindowsGSM
             _serverMetadata[i].AutoStartAlert = serverConfig.AutoStartAlert;
             _serverMetadata[i].AutoUpdateAlert = serverConfig.AutoUpdateAlert;
             _serverMetadata[i].AutoIpUpdateAlert = serverConfig.AutoIpUpdate;
+            _serverMetadata[i].SkipUserSetup = serverConfig.SkipUserSetup; 
             _serverMetadata[i].RestartCrontabAlert = serverConfig.RestartCrontabAlert;
             _serverMetadata[i].CrashAlert = serverConfig.CrashAlert;
 
@@ -914,7 +921,7 @@ namespace WindowsGSM
                     {
                         if (GetServerMetadata(serverId).DiscordAlert && GetServerMetadata(serverId).AutoStartAlert)
                         {
-                            var webhook = new DiscordWebhook(GetServerMetadata(serverId).DiscordWebhook, GetServerMetadata(serverId).DiscordMessage, g_DonorType);
+                            var webhook = new DiscordWebhook(GetServerMetadata(serverId).DiscordWebhook, GetServerMetadata(serverId).DiscordMessage, g_DonorType, GetServerMetadata(serverId).SkipUserSetup);
                             await webhook.Send(server.ID, server.Game, "Started | Auto Start", server.Name, server.IP, server.Port);
                             _latestWebhookSend = GetServerMetadata(serverId).ServerStatus;
                         }
@@ -940,7 +947,7 @@ namespace WindowsGSM
                         {
                             if (_serverMetadata[serverId].CurrentPublicIp == string.Empty || _serverMetadata[serverId].CurrentPublicIp != currentPublicIp)
                             {
-                                var webhook = new DiscordWebhook(GetServerMetadata(serverId).DiscordWebhook, GetServerMetadata(serverId).DiscordMessage, g_DonorType);
+                                var webhook = new DiscordWebhook(GetServerMetadata(serverId).DiscordWebhook, GetServerMetadata(serverId).DiscordMessage, g_DonorType, GetServerMetadata(serverId).SkipUserSetup);
                                 await webhook.Send(server.ID, server.Game, "Current Public IP", server.Name, currentPublicIp, server.Port);
                                 _serverMetadata[serverId].CurrentPublicIp = currentPublicIp;
                             }
@@ -964,7 +971,7 @@ namespace WindowsGSM
         {
             while (true)
             {
-                await Task.Delay(10);
+                await Task.Delay(100);
                 var row = (ServerTable)ServerGrid.SelectedItem;
                 if (row != null)
                 {
@@ -1028,9 +1035,31 @@ namespace WindowsGSM
 
                 dashboard_players_count.Content = GetActivePlayers().ToString();
 
+                foreach (ServerTable server in ServerGrid.Items)
+                {
+                    var serverMetadata = GetServerMetadata(server.ID);
+                    if (serverMetadata.ServerStatus == ServerStatus.Started && serverMetadata.Process != null && !serverMetadata.Process.HasExited)
+                    {
+                        try
+                        {
+                            var uptime = DateTime.Now - serverMetadata.Process.StartTime;
+                            server.Uptime = $"{(int)uptime.TotalDays}d {uptime.Hours}h {uptime.Minutes}m {uptime.Seconds}s";
+                        }
+                        catch
+                        {
+                            server.Uptime = "N/A";
+                        }
+                    }
+                    else
+                    {
+                        server.Uptime = string.Empty;
+                    }
+                }
+                ServerGrid.Items.Refresh();
+
                 Refresh_DashBoard_LiveChart();
 
-                await Task.Delay(2000);
+                await Task.Delay(1000);
             }
         }
 
@@ -1422,7 +1451,7 @@ namespace WindowsGSM
             string userDataPath = ServerPath.GetBin("steamcmd", "userData.txt");
             if (File.Exists(userDataPath))
             {
-                Process.Start(userDataPath);
+                Process.Start("notepad", userDataPath);
             }
         }
 
@@ -1620,7 +1649,7 @@ namespace WindowsGSM
             int serverId = int.Parse(server.ID);
             if (!GetServerMetadata(serverId).DiscordAlert) { return; }
 
-            var webhook = new DiscordWebhook(GetServerMetadata(serverId).DiscordWebhook, GetServerMetadata(serverId).DiscordMessage, g_DonorType);
+            var webhook = new DiscordWebhook(GetServerMetadata(serverId).DiscordWebhook, GetServerMetadata(serverId).DiscordMessage, g_DonorType, GetServerMetadata(serverId).SkipUserSetup);
             await webhook.Send(server.ID, server.Game, "Webhook Test Alert", server.Name, server.IP, server.Port);
         }
 
@@ -1993,7 +2022,7 @@ namespace WindowsGSM
             _serverMetadata[int.Parse(server.ID)].Process = p;
             p.Exited += (sender, e) => OnGameServerExited(server);
 
-            await Task.Run(() =>
+            var task = Task.Run(() =>
             {
                 try
                 {
@@ -2004,7 +2033,6 @@ namespace WindowsGSM
                             Thread.Sleep(500);
                             //Debug.WriteLine("Try Setting ShowMinNoActivate Console Window");
                         }
-
                         Debug.WriteLine("Set ShowMinNoActivate Console Window");
 
                         //Save MainWindow
@@ -2016,7 +2044,6 @@ namespace WindowsGSM
                     ShowWindow(p.MainWindowHandle, WindowShowStyle.Hide);
                     Thread.Sleep(500);
                     ShowWindow(p.MainWindowHandle, _serverMetadata[int.Parse(server.ID)].ShowConsole ? WindowShowStyle.ShowNormal : WindowShowStyle.Hide);
-
                 }
                 catch
                 {
@@ -2312,84 +2339,167 @@ namespace WindowsGSM
                 return false;
             }
 
-            //Begin backup
             _serverMetadata[int.Parse(server.ID)].ServerStatus = ServerStatus.Backuping;
             Log(server.ID, "Action: Backup" + notes);
             SetServerStatus(server, "Backuping");
 
-            //End All Running Process
             await EndAllRunningProcess(server.ID);
             await Task.Delay(1000);
 
-            string backupLocation = ServerPath.GetBackups(server.ID);
-            if (!Directory.Exists(backupLocation))
+            var backupConfig = new BackupConfig(server.ID);
+            string backupLocation = string.IsNullOrWhiteSpace(backupConfig.BackupLocation) ? ServerPath.GetBackups(server.ID) : backupConfig.BackupLocation;
+            try
+            {
+                Directory.CreateDirectory(backupLocation);
+            }
+            catch (Exception ex)
             {
                 _serverMetadata[int.Parse(server.ID)].ServerStatus = ServerStatus.Stopped;
                 Log(server.ID, "Server: Fail to backup");
-                Log(server.ID, "[ERROR] Backup location not found");
+                Log(server.ID, "[ERROR] Backup location not accessible: " + ex.Message);
                 SetServerStatus(server, "Stopped");
                 return false;
             }
 
-            string zipFileName = $"WGSM-Backup-Server-{server.ID}-";
+            string zipFileNamePrefix = $"WGSM-Backup-Server-{server.ID}-";
+            string zipFile = Path.Combine(backupLocation, $"{zipFileNamePrefix}{DateTime.Now.ToString("yyyyMMddHHmmss")}.zip");
 
-            // Remove the oldest Backup file
-            var backupConfig = new BackupConfig(server.ID);
-            foreach (var fi in new DirectoryInfo(backupLocation).GetFiles("*.zip").Where(x => x.Name.Contains(zipFileName)).OrderByDescending(x => x.LastWriteTime).Skip(backupConfig.MaximumBackups - 1))
+            try
             {
-                string ex = string.Empty;
+                int maxKeep = backupConfig.MaximumBackups <= 0 ? 1 : backupConfig.MaximumBackups;
+                var toRemove = new DirectoryInfo(backupLocation)
+                    .GetFiles("*.zip")
+                    .Where(x => x.Name.Contains(zipFileNamePrefix))
+                    .OrderByDescending(x => x.LastWriteTime)
+                    .Skip(maxKeep - 1)
+                    .ToList();
+
+                foreach (var f in toRemove)
+                {
+                    try { f.Delete(); } catch { }
+                }
+            }
+            catch { }
+            var saves = (backupConfig.SavesLocations ?? Enumerable.Empty<string>()).ToList();
+            if (saves.Count == 0)
+            {
+                string startPath = ServerPath.GetServers(server.ID);
+                string error = string.Empty;
                 await Task.Run(() =>
                 {
                     try
                     {
-                        fi.Delete();
+                        ZipFile.CreateFromDirectory(startPath, zipFile);
                     }
                     catch (Exception e)
                     {
-                        ex = e.Message;
+                        error = e.Message;
                     }
                 });
 
-                if (ex != string.Empty)
+                if (!string.IsNullOrEmpty(error))
                 {
                     _serverMetadata[int.Parse(server.ID)].ServerStatus = ServerStatus.Stopped;
                     Log(server.ID, "Server: Fail to backup");
-                    Log(server.ID, $"[ERROR] {ex}");
+                    Log(server.ID, $"[ERROR] {error}");
+                    SetServerStatus(server, "Stopped");
+                    return false;
+                }
+
+                _serverMetadata[int.Parse(server.ID)].ServerStatus = ServerStatus.Stopped;
+                Log(server.ID, "Server: Backuped");
+                SetServerStatus(server, "Stopped");
+                return true;
+            }
+
+            string timestamp = DateTime.Now.ToString("yyyyMMddHHmmss");
+            string tempRoot = Path.Combine(Path.GetTempPath(), "WindowsGSM_Backup", server.ID, timestamp);
+            try
+            {
+                void DirectoryCopy(string src, string dst)
+                {
+                    var dir = new DirectoryInfo(src);
+                    if (!dir.Exists) return;
+                    Directory.CreateDirectory(dst);
+
+                    foreach (var file in dir.GetFiles())
+                    {
+                        file.CopyTo(Path.Combine(dst, file.Name), true);
+                    }
+
+                    foreach (var sub in dir.GetDirectories())
+                    {
+                        DirectoryCopy(sub.FullName, Path.Combine(dst, sub.Name));
+                    }
+                }
+                Directory.CreateDirectory(tempRoot);
+                var manifest = new List<string>();
+                for (int i = 0; i < saves.Count; i++)
+                {
+                    string original = saves[i] ?? string.Empty;
+                    original = Environment.ExpandEnvironmentVariables(original).Trim();
+                    manifest.Add($"{i}|{original}");
+
+                    string destSub = Path.Combine(tempRoot, $"save_{i}");
+                    if (string.IsNullOrWhiteSpace(original))
+                    {
+                        Directory.CreateDirectory(destSub);
+                        continue;
+                    }
+
+                    if (Directory.Exists(original))
+                    {
+                        DirectoryCopy(original, destSub);
+                    }
+                    else if (File.Exists(original))
+                    {
+                        Directory.CreateDirectory(destSub);
+                        File.Copy(original, Path.Combine(destSub, Path.GetFileName(original)), true);
+                    }
+                    else
+                    {
+                        Directory.CreateDirectory(destSub);
+                    }
+                }
+                File.WriteAllLines(Path.Combine(tempRoot, "backup_manifest.txt"), manifest);
+                string error = string.Empty;
+                await Task.Run(() =>
+                {
+                    try
+                    {
+                        ZipFile.CreateFromDirectory(tempRoot, zipFile);
+                    }
+                    catch (Exception e)
+                    {
+                        error = e.Message;
+                    }
+                });
+                if (!string.IsNullOrEmpty(error))
+                {
+                    _serverMetadata[int.Parse(server.ID)].ServerStatus = ServerStatus.Stopped;
+                    Log(server.ID, "Server: Fail to backup");
+                    Log(server.ID, $"[ERROR] {error}");
                     SetServerStatus(server, "Stopped");
                     return false;
                 }
             }
-
-            string startPath = ServerPath.GetServers(server.ID);
-            string zipFile = Path.Combine(ServerPath.GetBackups(server.ID), $"{zipFileName}{DateTime.Now.ToString("yyyyMMddHHmmss")}.zip");
-
-            string error = string.Empty;
-            await Task.Run(() =>
-            {
-                try
-                {
-                    ZipFile.CreateFromDirectory(startPath, zipFile);
-                }
-                catch (Exception e)
-                {
-                    error = e.Message;
-                }
-            });
-
-            if (error != string.Empty)
+            catch (Exception ex)
             {
                 _serverMetadata[int.Parse(server.ID)].ServerStatus = ServerStatus.Stopped;
                 Log(server.ID, "Server: Fail to backup");
-                Log(server.ID, $"[ERROR] {error}");
+                Log(server.ID, $"[ERROR] {ex.Message}");
                 SetServerStatus(server, "Stopped");
-
+                try { Directory.Delete(tempRoot, true); } catch { }
                 return false;
+            }
+            finally
+            {
+                try { Directory.Delete(tempRoot, true); } catch { }
             }
 
             _serverMetadata[int.Parse(server.ID)].ServerStatus = ServerStatus.Stopped;
             Log(server.ID, "Server: Backuped");
             SetServerStatus(server, "Stopped");
-
             return true;
         }
 
@@ -2400,8 +2510,10 @@ namespace WindowsGSM
                 return false;
             }
 
-            string backupLocation = ServerPath.GetBackups(server.ID);
+            var backupConfig = new BackupConfig(server.ID);
+            string backupLocation = string.IsNullOrWhiteSpace(backupConfig.BackupLocation) ? ServerPath.GetBackups(server.ID) : backupConfig.BackupLocation;
             string backupPath = Path.Combine(backupLocation, backupFile);
+
             if (!File.Exists(backupPath))
             {
                 Log(server.ID, "Server: Fail to restore backup");
@@ -2413,46 +2525,160 @@ namespace WindowsGSM
             Log(server.ID, "Action: Restore Backup");
             SetServerStatus(server, "Restoring");
 
-            string extractPath = ServerPath.GetServers(server.ID);
-            if (Directory.Exists(extractPath))
+            string tempRoot = Path.Combine(Path.GetTempPath(), "WindowsGSM_Backup_Restore", server.ID, DateTime.Now.ToString("yyyyMMddHHmmss"));
+            string error = string.Empty;
+
+            void DirectoryCopy(string src, string dst)
             {
-                string ex = string.Empty;
+                var dir = new DirectoryInfo(src);
+                if (!dir.Exists) return;
+                Directory.CreateDirectory(dst);
+
+                foreach (var file in dir.GetFiles())
+                {
+                    file.CopyTo(Path.Combine(dst, file.Name), true);
+                }
+
+                foreach (var sub in dir.GetDirectories())
+                {
+                    DirectoryCopy(sub.FullName, Path.Combine(dst, sub.Name));
+                }
+            }
+            try
+            {
+                Directory.CreateDirectory(tempRoot);
                 await Task.Run(() =>
                 {
                     try
                     {
-                        Directory.Delete(extractPath, true);
+                        ZipFile.ExtractToDirectory(backupPath, tempRoot);
                     }
                     catch (Exception e)
                     {
-                        ex = e.Message;
+                        error = e.Message;
                     }
                 });
 
-                if (ex != string.Empty)
+                if (!string.IsNullOrEmpty(error))
                 {
                     _serverMetadata[int.Parse(server.ID)].ServerStatus = ServerStatus.Stopped;
                     Log(server.ID, "Server: Fail to restore backup");
-                    Log(server.ID, $"[ERROR] {ex}");
+                    Log(server.ID, $"[ERROR] {error}");
                     SetServerStatus(server, "Stopped");
+                    try { Directory.Delete(tempRoot, true); } catch { }
                     return false;
                 }
+
+                string manifestPath = Path.Combine(tempRoot, "backup_manifest.txt");
+                if (!File.Exists(manifestPath))
+                {
+                    string extractPath = ServerPath.GetServers(server.ID);
+
+                    if (Directory.Exists(extractPath))
+                    {
+                        string ex = string.Empty;
+                        await Task.Run(() =>
+                        {
+                            try
+                            {
+                                Directory.Delete(extractPath, true);
+                            }
+                            catch (Exception e)
+                            {
+                                ex = e.Message;
+                            }
+                        });
+
+                        if (!string.IsNullOrEmpty(ex))
+                        {
+                            error = ex;
+                        }
+                    }
+
+                    if (!string.IsNullOrEmpty(error))
+                    {
+                        _serverMetadata[int.Parse(server.ID)].ServerStatus = ServerStatus.Stopped;
+                        Log(server.ID, "Server: Fail to restore backup");
+                        Log(server.ID, $"[ERROR] {error}");
+                        SetServerStatus(server, "Stopped");
+                        try { Directory.Delete(tempRoot, true); } catch { }
+                        return false;
+                    }
+
+                    error = string.Empty;
+                    await Task.Run(() =>
+                    {
+                        try
+                        {
+                            ZipFile.ExtractToDirectory(backupPath, ServerPath.GetServers(server.ID));
+                        }
+                        catch (Exception e)
+                        {
+                            error = e.Message;
+                        }
+                    });
+
+                    try { Directory.Delete(tempRoot, true); } catch { }
+
+                    if (!string.IsNullOrEmpty(error))
+                    {
+                        _serverMetadata[int.Parse(server.ID)].ServerStatus = ServerStatus.Stopped;
+                        Log(server.ID, "Server: Fail to restore backup");
+                        Log(server.ID, $"[ERROR] {error}");
+                        SetServerStatus(server, "Stopped");
+                        return false;
+                    }
+
+                    _serverMetadata[int.Parse(server.ID)].ServerStatus = ServerStatus.Stopped;
+                    Log(server.ID, "Server: Restored");
+                    SetServerStatus(server, "Stopped");
+                    return true;
+                }
+
+                var manifestLines = File.ReadAllLines(manifestPath);
+                foreach (var line in manifestLines)
+                {
+                    if (string.IsNullOrWhiteSpace(line)) continue;
+                    var parts = line.Split(new[] { '|' }, 2);
+                    if (parts.Length != 2) continue;
+                    if (!int.TryParse(parts[0], out int idx)) continue;
+                    string originalPath = parts[1];
+                    if (string.IsNullOrWhiteSpace(originalPath)) continue;
+
+                    originalPath = Environment.ExpandEnvironmentVariables(originalPath).Trim();
+                    string extractedSub = Path.Combine(tempRoot, $"save_{idx}");
+
+                    try
+                    {
+                        if (Directory.Exists(originalPath))
+                        {
+                            Directory.Delete(originalPath, true);
+                        }
+
+                        if (Directory.Exists(extractedSub))
+                        {
+                            DirectoryCopy(extractedSub, originalPath);
+                        }
+                        else if (File.Exists(extractedSub))
+                        {
+                            Directory.CreateDirectory(Path.GetDirectoryName(originalPath) ?? originalPath);
+                            File.Copy(extractedSub, originalPath, true);
+                        }
+                        else { }
+                    }
+                    catch (Exception e)
+                    {
+                        error = e.Message;
+                        break;
+                    }
+                }
+                try { Directory.Delete(tempRoot, true); } catch { }
             }
-
-            string error = string.Empty;
-            await Task.Run(() =>
+            catch (Exception ex)
             {
-                try
-                {
-                    ZipFile.ExtractToDirectory(backupPath, extractPath);
-                }
-                catch (Exception e)
-                {
-                    error = e.Message;
-                }
-            });
-
-            if (error != string.Empty)
+                error = ex.Message;
+            }
+            if (!string.IsNullOrEmpty(error))
             {
                 _serverMetadata[int.Parse(server.ID)].ServerStatus = ServerStatus.Stopped;
                 Log(server.ID, "Server: Fail to restore backup");
@@ -2460,11 +2686,9 @@ namespace WindowsGSM
                 SetServerStatus(server, "Stopped");
                 return false;
             }
-
             _serverMetadata[int.Parse(server.ID)].ServerStatus = ServerStatus.Stopped;
             Log(server.ID, "Server: Restored");
             SetServerStatus(server, "Stopped");
-
             return true;
         }
 
@@ -2552,7 +2776,7 @@ namespace WindowsGSM
                     {
                         if (CheckWebhookThreshold(ref _lastCrashTime) || _latestWebhookSend != ServerStatus.Crashed)
                         {
-                            var webhook = new DiscordWebhook(GetServerMetadata(serverId).DiscordWebhook, GetServerMetadata(serverId).DiscordMessage, g_DonorType);
+                            var webhook = new DiscordWebhook(GetServerMetadata(serverId).DiscordWebhook, GetServerMetadata(serverId).DiscordMessage, g_DonorType, GetServerMetadata(serverId).SkipUserSetup);
                             await webhook.Send(server.ID, server.Game, "Crashed", server.Name, server.IP, server.Port);
                             _latestWebhookSend = ServerStatus.Crashed;
                         }
@@ -2594,7 +2818,7 @@ namespace WindowsGSM
                             //Only send Webhook_Start if there wasn't a retry in the last X min
                             if (CheckWebhookThreshold(ref _lastAutoRestartTime))
                             {
-                                var webhook = new DiscordWebhook(GetServerMetadata(serverId).DiscordWebhook, GetServerMetadata(serverId).DiscordMessage, g_DonorType);
+                                var webhook = new DiscordWebhook(GetServerMetadata(serverId).DiscordWebhook, GetServerMetadata(serverId).DiscordMessage, g_DonorType, GetServerMetadata(serverId).SkipUserSetup);
                                 await webhook.Send(server.ID, server.Game, "Restarted | Auto Restart", server.Name, server.IP, server.Port);
                                 _latestWebhookSend = GetServerMetadata(serverId).ServerStatus;
                             }
@@ -2687,7 +2911,7 @@ namespace WindowsGSM
 
                             if (GetServerMetadata(serverId).DiscordAlert && GetServerMetadata(serverId).AutoUpdateAlert)
                             {
-                                var webhook = new DiscordWebhook(GetServerMetadata(serverId).DiscordWebhook, GetServerMetadata(serverId).DiscordMessage, g_DonorType);
+                                var webhook = new DiscordWebhook(GetServerMetadata(serverId).DiscordWebhook, GetServerMetadata(serverId).DiscordMessage, g_DonorType, GetServerMetadata(serverId).SkipUserSetup);
                                 await webhook.Send(server.ID, server.Game, "Updated | Auto Update", server.Name, server.IP, server.Port);
                                 _latestWebhookSend = GetServerMetadata(serverId).ServerStatus;
                             }
@@ -2748,7 +2972,7 @@ namespace WindowsGSM
 
         private async void StartQuery(ServerTable server)
         {
-            if (string.IsNullOrWhiteSpace(server.IP) || string.IsNullOrWhiteSpace(server.QueryPort)) { return; }
+            if (string.IsNullOrWhiteSpace(server.IP)) { return; }
 
             // Check the server support Query Method
             dynamic gameServer = GameServer.Data.Class.Get(server.Game, pluginList: PluginsList);
@@ -2766,16 +2990,26 @@ namespace WindowsGSM
                     break;
                 }
 
-                if (!IsValidIPAddress(server.IP) || !IsValidPort(server.QueryPort))
+                dynamic query = gameServer.QueryMethod;
+                string portString = (query is EOS) ? server.Port : server.QueryPort;
+
+                if (!IsValidIPAddress(server.IP) || !IsValidPort(portString))
                 {
+                    await Task.Delay(5000);
                     continue;
                 }
 
-
-                var query = gameServer.QueryMethod as QueryTemplate;
-                query.SetAddressPort(server.IP, int.Parse(server.QueryPort));
                 try
                 {
+                    string ip = server.IP;
+                    //map "bind to all" ip to localhost
+                    if(ip.Contains("0.0.0.0"))
+                    {
+                        ip = "127.0.0.1";
+                    }
+
+                    query.SetAddressPort(server.IP, int.Parse(portString));
+
                     string players = await query.GetPlayersAndMaxPlayers();
 
                     if (players != null)
@@ -2795,19 +3029,26 @@ namespace WindowsGSM
                         }
                     }
                 }
-                catch { }
+                catch
+                {
+                    // keep existing behavior (swallow); optionally log
+                }
+
                 try
                 {
-                    var playerData = await query.GetPlayersData();
-                    if(playerData != null && playerData.Count != 0)
+                    if (query is QueryTemplate templateQuery)
                     {
-                        if (int.TryParse(server.ID, out var serverId))
+                        var playerData = await templateQuery.GetPlayersData();
+                        if (playerData != null && playerData.Count != 0)
                         {
                             server.PlayerList = playerData;
                         }
                     }
                 }
-                catch { }
+                catch
+                {
+                    // keep existing behavior (swallow); optionally log
+                }
 
                 await Task.Delay(5000);
             }
@@ -3021,17 +3262,17 @@ namespace WindowsGSM
         #region Top Bar Button
         private void Button_Website_Click(object sender, RoutedEventArgs e)
         {
-            Process.Start("https://windowsgsm.com/");
+            Process.Start(new ProcessStartInfo("https://windowsgsm.com/") { UseShellExecute = true });
         }
 
         private void Button_Discord_Click(object sender, RoutedEventArgs e)
         {
-            Process.Start("https://discord.gg/bGc7t2R");
+            Process.Start(new ProcessStartInfo("https://discord.gg/bGc7t2R") { UseShellExecute = true });
         }
 
         private void Button_Patreon_Click(object sender, RoutedEventArgs e)
         {
-            Process.Start("https://www.patreon.com/WindowsGSM/");
+            Process.Start(new ProcessStartInfo("https://www.patreon.com/WindowsGSM/") { UseShellExecute = true });
         }
 
         private void Button_Settings_Click(object sender, RoutedEventArgs e)
@@ -3244,12 +3485,12 @@ namespace WindowsGSM
         #region Menu - Help
         private void Help_OnlineDocumentation_Click(object sender, RoutedEventArgs e)
         {
-            Process.Start("https://docs.windowsgsm.com");
+            Process.Start(new ProcessStartInfo("https://docs.windowsgsm.com") { UseShellExecute = true });
         }
 
         private void Help_ReportIssue_Click(object sender, RoutedEventArgs e)
         {
-            Process.Start("https://github.com/WindowsGSM/WindowsGSM/issues");
+            Process.Start(new ProcessStartInfo("https://github.com/raziel7893/WindowsGSM/issues") { UseShellExecute = true });
         }
 
         private async void Help_SoftwareUpdates_Click(object sender, RoutedEventArgs e)
@@ -3382,7 +3623,7 @@ namespace WindowsGSM
 
             if (result == MessageDialogResult.Affirmative)
             {
-                Process.Start("https://www.patreon.com/WindowsGSM/");
+                Process.Start(new ProcessStartInfo("https://www.patreon.com/WindowsGSM/") { UseShellExecute = true });
             }
         }
         #endregion
@@ -3798,6 +4039,14 @@ namespace WindowsGSM
             _serverMetadata[int.Parse(server.ID)].AutoIpUpdateAlert = MahAppSwitch_AutoIpUpdate.IsOn;
             ServerConfig.SetSetting(server.ID, ServerConfig.SettingName.AutoIpUpdateAlert, GetServerMetadata(server.ID).AutoIpUpdateAlert ? "1" : "0");
         }
+
+        private void Switch_SkipUserSetup_Click(object sender, RoutedEventArgs e)
+        {
+            var server = (ServerTable)ServerGrid.SelectedItem;
+            if (server == null) { return; }
+            _serverMetadata[int.Parse(server.ID)].SkipUserSetup = MahAppSwitch_SkipUserSetup.IsOn;
+            ServerConfig.SetSetting(server.ID, ServerConfig.SettingName.SkipUserSetup, GetServerMetadata(server.ID).SkipUserSetup ? "1" : "0");
+        }
         #endregion
 
         private async void Window_Activated(object sender, EventArgs e)
@@ -4153,7 +4402,7 @@ namespace WindowsGSM
             string inviteLink = g_DiscordBot.GetInviteLink();
             if (!string.IsNullOrWhiteSpace(inviteLink))
             {
-                Process.Start(g_DiscordBot.GetInviteLink());
+                Process.Start(new ProcessStartInfo(g_DiscordBot.GetInviteLink()) { UseShellExecute = true });
             }
         }
         #endregion

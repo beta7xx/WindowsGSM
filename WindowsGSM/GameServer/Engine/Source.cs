@@ -95,9 +95,11 @@ namespace WindowsGSM.GameServer.Engine
                         WindowStyle = ProcessWindowStyle.Minimized,
                         UseShellExecute = false,
                         StandardOutputEncoding = Encoding.UTF8,
-                        StandardErrorEncoding = Encoding.UTF8,
+                        StandardErrorEncoding = Encoding.UTF8, 
+                        //StandardInputEncoding = Encoding.UTF8,
                         RedirectStandardOutput = true,
-                        RedirectStandardError = true
+                        RedirectStandardError = true,
+                        //RedirectStandardInput = true
                     },
                     EnableRaisingEvents = true
                 };

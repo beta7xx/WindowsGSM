@@ -1,10 +1,7 @@
 ﻿using System;
-using System.CodeDom.Compiler;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
-using System.Reflection;
-using System.Text;
 using System.Threading.Tasks;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
@@ -37,7 +34,18 @@ namespace WindowsGSM.Functions
                 var pluginFile = Path.Combine(pluginFolder, Path.GetFileName(pluginFolder));
                 if (File.Exists(pluginFile))
                 {
-                    var plugin = await LoadPlugin(pluginFile, shouldAwait);
+                    PluginMetadata plugin = new PluginMetadata();
+                    plugin.IsLoaded = false;
+                    plugin.FileName = "NoValidPlugin";
+                    plugin.FullName = "NoValidPlugin";
+                    try
+                    {
+                        plugin = await LoadPlugin(pluginFile, shouldAwait);
+                    }
+                    catch (Exception ex)
+                    {
+                        File.AppendAllText("logs/pluginsImportError.log", $"error importing plugin {pluginFile}: {ex.Message}, {ex.StackTrace}");
+                    }
                     if (plugin != null)
                     {
                         plugins.Add(plugin);
@@ -57,7 +65,6 @@ namespace WindowsGSM.Functions
 
             var compiler = new RoslynCompiler($"WindowsGSM.Plugins.{Path.GetFileNameWithoutExtension(path)}", File.ReadAllText(path), new[] { typeof(Console), typeof(Console) }, pluginMetadata);
             var type = compiler.Compile();
-
 
             try
             {
@@ -90,7 +97,8 @@ namespace WindowsGSM.Functions
             catch (Exception e)
             {
                 pluginMetadata.Error = e.Message;
-                Console.WriteLine(pluginMetadata.Error); 
+                Console.WriteLine(pluginMetadata.Error);
+                File.AppendAllText("logs/pluginsImportError.log", $"error importing plugin {pluginMetadata.FileName}: {e.Message}, {e.StackTrace}");
                 pluginMetadata.IsLoaded = false;
             }
 
